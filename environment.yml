@@ -1,0 +1,20 @@
+name: slac-research
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy>=1.21.0
+  - scipy>=1.7.0
+  - matplotlib>=3.5.0
+  - scikit-learn>=1.0.0
+  - h5py>=3.6.0
+  - pip
+  - pip:
+    - tensorflow>=2.8.0
+    #- tensorflow-quantum>=0.7.0 # unable to install of Apple mac
+    - cirq>=1.0.0
+    - jax>=0.3.0
+    - jaxlib>=0.3.0
+    - pennylane>=0.25.0
+    - pennylane-lightning>=0.25.0
