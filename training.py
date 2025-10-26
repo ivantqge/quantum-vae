@@ -79,7 +79,7 @@ def create_callbacks(stop_patience=15, lr_patience=10, model_dir="models"):
             min_lr=1e-6
         ),
         keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(model_dir, 'best_model.h5'),
+            filepath=os.path.join(model_dir, 'best_model.keras'),
             monitor='val_loss',
             save_best_only=True,
             verbose=1
@@ -203,9 +203,9 @@ def train_model(data, model_config, training_config, output_dir="outputs"):
     )
     
     # Save final model
-    model_path = os.path.join(output_dir, 'final_model.h5')
-    model.save_weights(model_path)
-    print(f"Final model weights saved to {model_path}")
+    model_path = os.path.join(output_dir, 'final_model.keras')
+    model.save(model_path)
+    print(f"Final model saved to {model_path}")
     
     # Plot training history
     plot_path = os.path.join(output_dir, 'training_history.png')

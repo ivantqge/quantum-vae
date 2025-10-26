@@ -53,7 +53,7 @@ def create_quantum_encoder(input_dim, h_dim_1, h_dim_2, latent_dim, l2_factor=1e
         def __init__(self, quantum_dim, **kwargs):
             super().__init__(**kwargs)
             self.quantum_dim = quantum_dim
-            self.pqc_layer = make_quantum_layer(quantum_dim, use_vectorized=True)
+            self.pqc_layer = make_quantum_layer(quantum_dim, depth=3, use_vectorized=True)
         
         def call(self, inputs):
             # Take only the first quantum_dim features for the quantum layer

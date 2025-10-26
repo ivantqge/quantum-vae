@@ -28,7 +28,7 @@ class QuantumLayerVectorized(tf.keras.layers.Layer):
     Uses PennyLane's TensorFlow interface for proper gradient support.
     """
     
-    def __init__(self, num_qubits, depth=3, device='default.qubit', **kwargs):
+    def __init__(self, num_qubits, depth=1, device='default.qubit', **kwargs):
         super().__init__(**kwargs)
         self.num_qubits = num_qubits
         self.depth = depth
@@ -37,10 +37,9 @@ class QuantumLayerVectorized(tf.keras.layers.Layer):
         # create qml device
         self.dev = qml.device(device, wires=num_qubits)
         
-        # define quantum circuit with TF interface
+        # define quantum circuit with TF interface (single sample)
         @qml.qnode(self.dev, interface='tf', diff_method='backprop')
         def quantum_circuit(inputs, weights):
-            
             # encode data into circuit
             for i in range(num_qubits):
                 qml.RY(inputs[i], wires=i)
@@ -70,7 +69,7 @@ class QuantumLayerVectorized(tf.keras.layers.Layer):
     
     def call(self, inputs):
         """
-        Execute quantum circuit for each sample in the batch.
+        Execute quantum circuit for each sample in the batch using tf.vectorized_map.
         """
         # need 2D inputs for the quantum circuit
         if len(inputs.shape) == 3:
@@ -79,27 +78,28 @@ class QuantumLayerVectorized(tf.keras.layers.Layer):
         # Take only the first num_qubits features
         quantum_inputs = inputs[:, :self.num_qubits]
         
-        # Execute quantum circuits for each sample
-        batch_size = tf.shape(quantum_inputs)[0]
-        
-        # Use tf.map_fn to handle variable batch sizes properly
+        # Use tf.vectorized_map for better performance 
         @tf.autograph.experimental.do_not_convert
         def process_sample(sample_input):
             # Execute quantum circuit
             expectation_values = self.quantum_circuit(sample_input, self.quantum_params)
             
-            # Convert list to tensor first
+            # Convert list to tensor if needed
             if isinstance(expectation_values, list):
                 expectation_values = tf.stack(expectation_values)
             
             if expectation_values.dtype.is_complex:
                 expectation_values = tf.math.real(expectation_values)
-
+            
             expectation_values = tf.cast(expectation_values, tf.float32)
             return expectation_values
         
-        # Process each sample in the batch
-        result = tf.map_fn(process_sample, quantum_inputs, dtype=tf.float32)
+        # Use vectorized_map for better GPU utilization
+        result = tf.vectorized_map(
+            process_sample, 
+            quantum_inputs,
+            fallback_to_while_loop=False
+        )
         result.set_shape([None, self.num_qubits])
         return result
     
@@ -117,7 +117,7 @@ class QuantumLayerVectorized(tf.keras.layers.Layer):
         return config
 
 
-def make_quantum_layer(num_qubits, depth=3, use_vectorized=True, device='default.qubit', use_tfq=None):
+def make_quantum_layer(num_qubits, depth=1, use_vectorized=True, device='default.qubit', use_tfq=None):
     """
     Create a quantum layer using either TensorFlow Quantum or PennyLane.
     
@@ -167,7 +167,7 @@ def make_quantum_layer(num_qubits, depth=3, use_vectorized=True, device='default
         return QuantumLayerVectorized(num_qubits, depth, device)
 
 
-def make_quantum_encoder_layer(input_dim, quantum_dim, depth=3, device='default.qubit'):
+def make_quantum_encoder_layer(input_dim, quantum_dim, depth=1, device='default.qubit'):
     """
     Create a quantum encoder layer that maps classical data to quantum circuit.
     
