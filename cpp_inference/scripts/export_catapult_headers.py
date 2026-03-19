@@ -46,27 +46,31 @@ def emit_ac_fixed_2d_array(f, typename, name, values_2d):
 
 
 def generate_trig_luts(out_path, nbits=10):
-    """Generate fixed-point trig LUTs for Catapult."""
+    """Generate fixed-point trig LUTs for Catapult.
+    
+    QAE uses linear normalization to [0,1]:
+      - pt:  pt / 1200
+      - eta: (eta + 5) / 10
+      - phi: (phi + pi) / (2*pi)
+    
+    The LUT maps normalized value in [0,1] to cos(theta/2) and sin(theta/2).
+    """
     n = 1 << nbits
     
-    # eta/phi range: [-pi, pi]
-    eta_phi_c = []
-    eta_phi_s = []
+    # Single LUT for normalized [0,1] range
+    # theta = normalized_value, so we compute cos(theta/2) and sin(theta/2)
+    lut_c = []
+    lut_s = []
     for i in range(n):
-        t = -math.pi + (i + 0.5) * (2 * math.pi) / n
-        eta_phi_c.append(math.cos(0.5 * t))
-        eta_phi_s.append(math.sin(0.5 * t))
-    
-    # pt range: [0, pi]
-    pt_c = []
-    pt_s = []
-    for i in range(n):
-        t = (i + 0.5) * math.pi / n
-        pt_c.append(math.cos(0.5 * t))
-        pt_s.append(math.sin(0.5 * t))
+        # Map index to [0, 1]
+        theta = (i + 0.5) / n
+        lut_c.append(math.cos(0.5 * theta))
+        lut_s.append(math.sin(0.5 * theta))
     
     with open(out_path, "w") as f:
         f.write("// Auto-generated fixed-point trig LUTs for Catapult HLS\n")
+        f.write("// Input: normalized value in [0,1] from linear normalization\n")
+        f.write("// Output: cos(theta/2), sin(theta/2)\n")
         f.write("#pragma once\n\n")
         f.write('#include <ac_fixed.h>\n\n')
         f.write("// angle_t: 16 bits, 2 integer, 14 fractional, signed\n")
@@ -74,10 +78,8 @@ def generate_trig_luts(out_path, nbits=10):
         f.write(f"#define TRIG_LUT_BITS {nbits}\n")
         f.write(f"#define TRIG_LUT_SIZE {n}\n\n")
         
-        emit_ac_fixed_array(f, "angle_t", "eta_phi_lut_cos", eta_phi_c)
-        emit_ac_fixed_array(f, "angle_t", "eta_phi_lut_sin", eta_phi_s)
-        emit_ac_fixed_array(f, "angle_t", "pt_lut_cos", pt_c)
-        emit_ac_fixed_array(f, "angle_t", "pt_lut_sin", pt_s)
+        emit_ac_fixed_array(f, "angle_t", "trig_lut_cos", lut_c)
+        emit_ac_fixed_array(f, "angle_t", "trig_lut_sin", lut_s)
     
     print(f"Wrote {out_path}")
 

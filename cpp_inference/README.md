@@ -50,14 +50,11 @@ cd cpp_inference/qae
 # 1. Export weights from trained model
 python ../scripts/export_qae_weights.py --ckpt ../../outputs/models/qae_4block_best.pt --out-dir .
 
-# 2. Generate trig LUTs
-python ../scripts/input_lut.py --out trig_luts.h --nbits 10
-
-# 3. Compile
+# 2. Compile (no trig LUTs needed - computed directly)
 g++ -O3 -std=c++17 -o qae_inference qae_inference_ref.cpp
 
-# 4. Run inference
-./qae_inference -i test_samples.csv -o cpp_scores.csv
+# 3. Run inference (input should be RAW unnormalized data)
+./qae_inference -i test_samples_raw.csv -o cpp_scores.csv
 ```
 
 ### Extended VAE Model
@@ -90,10 +87,22 @@ CSV file with 56 features per row (no header):
 - Columns 36-45: Jet eta (10)
 - Columns 46-55: Jet phi (10)
 
-**Normalization** (applied before inference):
+**IMPORTANT: Different models use different normalizations!**
+
+### QAE Normalization (linear to [0,1])
+The C++ code normalizes raw inputs internally:
+- pt: `pt / 1200`
+- eta: `(eta + 5) / 10`
+- phi: `(phi + π) / (2π)`
+
+Input CSV should contain **raw (unnormalized)** physics values.
+
+### Extended VAE Normalization (physics-aware, angles)
 - pt: `log(pt + 1)` scaled to `[0, π]`
 - eta: scaled from `[-3, 3]` to `[-π, π]`
 - phi: clamped to `[-π, π]`
+
+Input CSV should contain **normalized** values (use `LazyH5Array` with `norm=True`).
 
 ## Catapult HLS
 

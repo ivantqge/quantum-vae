@@ -184,10 +184,10 @@ def main():
     export_weights(ckpt_path, out_dir / args.out_weights)
     export_mahalanobis(ckpt_path, out_dir / args.out_maha)
     
-    print("\nDone! Now generate trig LUTs with:")
-    print(f"  python input_lut.py --out {out_dir}/trig_luts.h --nbits 10")
-    print("\nThen compile the C++ inference:")
+    print("\nDone! Now compile the C++ inference:")
     print(f"  g++ -O3 -std=c++17 -I{out_dir} -o qae_inference qae_inference_ref.cpp")
+    print("\nNote: QAE uses linear normalization (pt/1200, (eta+5)/10, (phi+pi)/(2*pi))")
+    print("      Input CSV should contain RAW (unnormalized) physics values.")
 
 
 if __name__ == "__main__":

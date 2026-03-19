@@ -3,6 +3,11 @@
 // Fixed-point implementation for Siemens Catapult HLS.
 // Uses ac_fixed types from ac_datatypes library.
 //
+// Input normalization (linear to [0,1]):
+//   - pt:  pt / 1200
+//   - eta: (eta + 5) / 10
+//   - phi: (phi + pi) / (2*pi)
+//
 // Bit widths:
 // - Angles/trig values: 16 bits (2 integer, 14 fractional)
 // - Statevector amplitudes: 18 bits (2 integer, 16 fractional)
@@ -32,32 +37,43 @@ struct cx_t {
 #define TRIG_LUT_BITS 10
 #define TRIG_LUT_SIZE (1 << TRIG_LUT_BITS)
 
-// Include generated headers
+// Include generated headers (from export_catapult_headers.py)
 #include "catapult_trig_luts.h"
 #include "catapult_weights.h"
 #include "catapult_mahalanobis.h"
 
-// ========================== LUT indexing ==========================
-
-inline ac_int<TRIG_LUT_BITS, false> lut_index_eta_phi(input_t theta) {
-    const input_t lo = -3.14159265;
-    const input_t hi = 3.14159265;
-    input_t t = theta;
-    if (t < lo) t = lo;
-    if (t > hi) t = hi;
-    input_t u = (t - lo) / (hi - lo);
-    ac_int<TRIG_LUT_BITS, false> idx = (ac_int<TRIG_LUT_BITS+4, false>)(u * (TRIG_LUT_SIZE - 1));
-    return idx;
+// Get cos/sin from LUT for normalized value in [0,1]
+inline void get_cs(input_t norm_val, angle_t& c, angle_t& s) {
+    ac_int<TRIG_LUT_BITS, false> idx = lut_index(norm_val);
+    c = trig_lut_cos[idx];
+    s = trig_lut_sin[idx];
 }
 
-inline ac_int<TRIG_LUT_BITS, false> lut_index_pt(input_t theta) {
-    const input_t lo = 0.0;
-    const input_t hi = 3.14159265;
-    input_t t = theta;
-    if (t < lo) t = lo;
-    if (t > hi) t = hi;
-    input_t u = (t - lo) / (hi - lo);
-    ac_int<TRIG_LUT_BITS, false> idx = (ac_int<TRIG_LUT_BITS+4, false>)(u * (TRIG_LUT_SIZE - 1));
+// ========================== Input normalization ==========================
+// QAE was trained with linear normalization to [0,1]
+
+inline input_t normalize_pt(input_t pt) {
+    return pt / input_t(1200.0);
+}
+
+inline input_t normalize_eta(input_t eta) {
+    return (eta + input_t(5.0)) / input_t(10.0);
+}
+
+inline input_t normalize_phi(input_t phi) {
+    const input_t PI = 3.14159265;
+    return (phi + PI) / (input_t(2.0) * PI);
+}
+
+// ========================== LUT indexing ==========================
+// LUT maps normalized value [0,1] to cos/sin of half-angle
+
+inline ac_int<TRIG_LUT_BITS, false> lut_index(input_t norm_val) {
+    // norm_val is in [0, 1], map to LUT index
+    input_t clamped = norm_val;
+    if (clamped < input_t(0.0)) clamped = input_t(0.0);
+    if (clamped > input_t(1.0)) clamped = input_t(1.0);
+    ac_int<TRIG_LUT_BITS, false> idx = (ac_int<TRIG_LUT_BITS+4, false>)(clamped * (TRIG_LUT_SIZE - 1));
     return idx;
 }
 
@@ -182,17 +198,24 @@ acc_t measure_expZ(const cx_t sv[1 << NQ], int wire) {
 // ========================== Block circuits ==========================
 
 // MET block: 1 qubit
-score_t run_met_block(input_t pt, input_t phi) {
+// Input: raw (unnormalized) pt and phi
+score_t run_met_block(input_t pt_raw, input_t phi_raw) {
     cx_t sv[2];
     
     sv[0].re = 1; sv[0].im = 0;
     sv[1].re = 0; sv[1].im = 0;
     
-    ac_int<TRIG_LUT_BITS, false> pt_idx = lut_index_pt(pt);
-    apply_ry<1>(sv, 0, pt_lut_cos[pt_idx], pt_lut_sin[pt_idx]);
+    // Normalize inputs
+    input_t pt_norm = normalize_pt(pt_raw);
+    input_t phi_norm = normalize_phi(phi_raw);
     
-    ac_int<TRIG_LUT_BITS, false> phi_idx = lut_index_eta_phi(phi);
-    apply_rz<1>(sv, 0, eta_phi_lut_cos[phi_idx], eta_phi_lut_sin[phi_idx]);
+    // Apply gates using LUT
+    angle_t c, s;
+    get_cs(pt_norm, c, s);
+    apply_ry<1>(sv, 0, c, s);
+    
+    get_cs(phi_norm, c, s);
+    apply_rz<1>(sv, 0, c, s);
     
     apply_ry<1>(sv, 0, met_weights_c[0], met_weights_s[0]);
     
@@ -203,7 +226,8 @@ score_t run_met_block(input_t pt, input_t phi) {
 }
 
 // Electron block: 4 qubits
-score_t run_ele_block(input_t pt[4], input_t eta[4], input_t phi[4]) {
+// Input: raw (unnormalized) pt, eta, phi arrays
+score_t run_ele_block(input_t pt_raw[4], input_t eta_raw[4], input_t phi_raw[4]) {
     cx_t sv[16];
     
     #pragma hls_unroll yes
@@ -213,13 +237,20 @@ score_t run_ele_block(input_t pt[4], input_t eta[4], input_t phi[4]) {
     }
     
     for (int k = 0; k < 4; ++k) {
-        ac_int<TRIG_LUT_BITS, false> eta_idx = lut_index_eta_phi(eta[k]);
-        ac_int<TRIG_LUT_BITS, false> pt_idx = lut_index_pt(pt[k]);
-        ac_int<TRIG_LUT_BITS, false> phi_idx = lut_index_eta_phi(phi[k]);
+        // Normalize inputs
+        input_t pt_norm = normalize_pt(pt_raw[k]);
+        input_t eta_norm = normalize_eta(eta_raw[k]);
+        input_t phi_norm = normalize_phi(phi_raw[k]);
         
-        apply_rx<4>(sv, k, eta_phi_lut_cos[eta_idx], eta_phi_lut_sin[eta_idx]);
-        apply_ry<4>(sv, k, pt_lut_cos[pt_idx], pt_lut_sin[pt_idx]);
-        apply_rz<4>(sv, k, eta_phi_lut_cos[phi_idx], eta_phi_lut_sin[phi_idx]);
+        angle_t c, s;
+        get_cs(eta_norm, c, s);
+        apply_rx<4>(sv, k, c, s);
+        
+        get_cs(pt_norm, c, s);
+        apply_ry<4>(sv, k, c, s);
+        
+        get_cs(phi_norm, c, s);
+        apply_rz<4>(sv, k, c, s);
     }
     
     // depth=1 ansatz
@@ -252,7 +283,8 @@ score_t run_ele_block(input_t pt[4], input_t eta[4], input_t phi[4]) {
 }
 
 // Muon block: 4 qubits (same structure as electron)
-score_t run_mu_block(input_t pt[4], input_t eta[4], input_t phi[4]) {
+// Input: raw (unnormalized) pt, eta, phi arrays
+score_t run_mu_block(input_t pt_raw[4], input_t eta_raw[4], input_t phi_raw[4]) {
     cx_t sv[16];
     
     #pragma hls_unroll yes
@@ -262,13 +294,20 @@ score_t run_mu_block(input_t pt[4], input_t eta[4], input_t phi[4]) {
     }
     
     for (int k = 0; k < 4; ++k) {
-        ac_int<TRIG_LUT_BITS, false> eta_idx = lut_index_eta_phi(eta[k]);
-        ac_int<TRIG_LUT_BITS, false> pt_idx = lut_index_pt(pt[k]);
-        ac_int<TRIG_LUT_BITS, false> phi_idx = lut_index_eta_phi(phi[k]);
+        // Normalize inputs
+        input_t pt_norm = normalize_pt(pt_raw[k]);
+        input_t eta_norm = normalize_eta(eta_raw[k]);
+        input_t phi_norm = normalize_phi(phi_raw[k]);
         
-        apply_rx<4>(sv, k, eta_phi_lut_cos[eta_idx], eta_phi_lut_sin[eta_idx]);
-        apply_ry<4>(sv, k, pt_lut_cos[pt_idx], pt_lut_sin[pt_idx]);
-        apply_rz<4>(sv, k, eta_phi_lut_cos[phi_idx], eta_phi_lut_sin[phi_idx]);
+        angle_t c, s;
+        get_cs(eta_norm, c, s);
+        apply_rx<4>(sv, k, c, s);
+        
+        get_cs(pt_norm, c, s);
+        apply_ry<4>(sv, k, c, s);
+        
+        get_cs(phi_norm, c, s);
+        apply_rz<4>(sv, k, c, s);
     }
     
     for (int ti = 0; ti < 2; ++ti) {
@@ -297,7 +336,8 @@ score_t run_mu_block(input_t pt[4], input_t eta[4], input_t phi[4]) {
 }
 
 // Jet block: 10 qubits, depth=4
-score_t run_jet_block(input_t pt[10], input_t eta[10], input_t phi[10]) {
+// Input: raw (unnormalized) pt, eta, phi arrays
+score_t run_jet_block(input_t pt_raw[10], input_t eta_raw[10], input_t phi_raw[10]) {
     cx_t sv[1024];
     
     for (int i = 0; i < 1024; ++i) {
@@ -306,15 +346,22 @@ score_t run_jet_block(input_t pt[10], input_t eta[10], input_t phi[10]) {
         sv[i].im = 0;
     }
     
-    // Feature encoding
+    // Feature encoding with normalization
     for (int k = 0; k < 10; ++k) {
-        ac_int<TRIG_LUT_BITS, false> eta_idx = lut_index_eta_phi(eta[k]);
-        ac_int<TRIG_LUT_BITS, false> pt_idx = lut_index_pt(pt[k]);
-        ac_int<TRIG_LUT_BITS, false> phi_idx = lut_index_eta_phi(phi[k]);
+        // Normalize inputs
+        input_t pt_norm = normalize_pt(pt_raw[k]);
+        input_t eta_norm = normalize_eta(eta_raw[k]);
+        input_t phi_norm = normalize_phi(phi_raw[k]);
         
-        apply_rx<10>(sv, k, eta_phi_lut_cos[eta_idx], eta_phi_lut_sin[eta_idx]);
-        apply_ry<10>(sv, k, pt_lut_cos[pt_idx], pt_lut_sin[pt_idx]);
-        apply_rz<10>(sv, k, eta_phi_lut_cos[phi_idx], eta_phi_lut_sin[phi_idx]);
+        angle_t c, s;
+        get_cs(eta_norm, c, s);
+        apply_rx<10>(sv, k, c, s);
+        
+        get_cs(pt_norm, c, s);
+        apply_ry<10>(sv, k, c, s);
+        
+        get_cs(phi_norm, c, s);
+        apply_rz<10>(sv, k, c, s);
     }
     
     // Ansatz: depth=4
