@@ -8,12 +8,19 @@ This directory contains C++ implementations of the quantum model inference for F
 cpp_inference/
 ├── qae/                          # Block Quantum Autoencoder (block_quantum_ae.py)
 │   ├── qae_inference_ref.cpp     # Double-precision reference implementation
-│   └── qae_inference_catapult.cpp # Fixed-point Catapult HLS version
+│   ├── qae_inference_vitis.cpp   # Fixed-point Xilinx Vitis HLS version
+│   └── qae_inference_catapult.cpp # Fixed-point Siemens Catapult HLS version
 ├── extended_vae/                 # Extended Quantum VAE (extended_quantum_vae.py)
-│   └── extended_vae_inference_ref.cpp  # Double-precision reference
+│   ├── extended_vae_inference_ref.cpp      # Double-precision reference
+│   ├── extended_vae_inference_vitis.cpp    # Fixed-point Xilinx Vitis HLS version
+│   └── extended_vae_inference_catapult.cpp # Fixed-point Siemens Catapult HLS version
 ├── scripts/                      # Export scripts
 │   ├── export_qae_weights.py     # Export QAE weights to C++ headers
-│   ├── export_extended_vae_weights.py  # Export Extended VAE weights
+│   ├── export_vitis_headers.py   # Export QAE Vitis HLS headers
+│   ├── export_catapult_headers.py # Export QAE Catapult HLS headers
+│   ├── export_extended_vae_weights.py  # Export Extended VAE weights (reference)
+│   ├── export_extended_vae_vitis_headers.py   # Export Extended VAE Vitis HLS headers
+│   ├── export_extended_vae_catapult_headers.py # Export Extended VAE Catapult HLS headers
 │   └── input_lut.py              # Generate trig lookup tables
 └── README.md
 ```
@@ -104,7 +111,40 @@ Input CSV should contain **raw (unnormalized)** physics values.
 
 Input CSV should contain **normalized** values (use `LazyH5Array` with `norm=True`).
 
-## Catapult HLS
+## HLS Synthesis
+
+### Xilinx Vitis HLS
+
+For FPGA synthesis with Xilinx Vitis HLS:
+
+```bash
+cd cpp_inference/qae
+
+# Generate Vitis-compatible headers
+python ../scripts/export_vitis_headers.py --ckpt ../../outputs/models/qae_4block_best.pt --out-dir vitis_headers
+
+# Copy to your Vitis project:
+# - vitis_headers/*.h
+# - qae_inference_vitis.cpp
+
+# In Vitis HLS:
+# - Set qae_inference_top as the top function
+# - Run C simulation, then synthesis
+```
+
+The Vitis version uses:
+- `ap_fixed<16, 2, AP_RND, AP_SAT>` for angles/trig values
+- `ap_fixed<18, 2, AP_RND, AP_SAT>` for statevector amplitudes
+- `ap_fixed<24, 4, AP_RND, AP_SAT>` for accumulators
+- `ap_fixed<20, 4, AP_RND, AP_SAT>` for scores
+
+Key HLS pragmas used:
+- `#pragma HLS INTERFACE mode=s_axilite` for AXI-Lite control
+- `#pragma HLS ARRAY_PARTITION` for parallel memory access
+- `#pragma HLS PIPELINE II=1` for loop pipelining
+- `#pragma HLS DATAFLOW` for block-level parallelism
+
+### Siemens Catapult HLS
 
 For FPGA synthesis with Siemens Catapult:
 
@@ -114,13 +154,58 @@ cd cpp_inference/qae
 # Generate Catapult-compatible headers
 python ../scripts/export_catapult_headers.py --ckpt ../../outputs/models/qae_4block_best.pt --out-dir catapult_headers
 
-# Use qae_inference_catapult.cpp with the generated headers
+# Copy to your Catapult project:
+# - catapult_headers/*.h
+# - qae_inference_catapult.cpp
+
+# In Catapult:
+# - Set qae_inference_top as the top function
+# - Run C simulation, then synthesis
 ```
 
 The Catapult version uses:
 - `ac_fixed<16, 2, true, AC_RND, AC_SAT>` for angles
 - `ac_fixed<18, 2, true, AC_RND, AC_SAT>` for amplitudes
 - `ac_fixed<20, 4, true, AC_RND, AC_SAT>` for scores
+
+### Extended VAE HLS
+
+#### Vitis HLS
+
+```bash
+cd cpp_inference/extended_vae
+
+# Generate Vitis-compatible headers
+python ../scripts/export_extended_vae_vitis_headers.py \
+    --ckpt ../../outputs/models/particle_extended_quantum_vae_best.pt \
+    --out-dir vitis_headers
+
+# Copy to your Vitis project:
+# - vitis_headers/*.h
+# - extended_vae_inference_vitis.cpp
+
+# Top function: extended_vae_encoder_top
+```
+
+#### Catapult HLS
+
+```bash
+cd cpp_inference/extended_vae
+
+# Generate Catapult-compatible headers
+python ../scripts/export_extended_vae_catapult_headers.py \
+    --ckpt ../../outputs/models/particle_extended_quantum_vae_best.pt \
+    --out-dir catapult_headers
+
+# Copy to your Catapult project:
+# - catapult_headers/*.h
+# - extended_vae_inference_catapult.cpp
+
+# Top function: extended_vae_encoder_top
+```
+
+**Note:** Extended VAE expects **pre-normalized** input (physics-aware normalization).
+Use `LazyH5Array` with `norm=True` to generate test data.
 
 ## Validation
 
