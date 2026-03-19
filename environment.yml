@@ -11,10 +11,10 @@ dependencies:
   - h5py>=3.6.0
   - pip
   - pip:
-    - tensorflow>=2.8.0
-    #- tensorflow-quantum>=0.7.0 # unable to install of Apple mac
+    - tensorflow>=2.8.0  
+    - torch>=2.0.0  
     - cirq>=1.0.0
-    - jax>=0.3.0
-    - jaxlib>=0.3.0
+    - jax==0.6.0
+    - jaxlib==0.6.0
     - pennylane>=0.25.0
-    - pennylane-lightning>=0.25.0
+    - pennylane-lightning[gpu]>=0.25.0 
