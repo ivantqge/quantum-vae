@@ -442,12 +442,71 @@ void run_jet_block(input_t pt[10], input_t eta[10], input_t phi[10], output_t ou
     }
 }
 
-// ========================== Top-level function ==========================
+// ========================== Classical layers for anomaly detection ==========================
+// Full pipeline: Quantum(56->32) -> Dense(32->16) -> z_mean(16->3) -> CKL score
+// Include vitis_extended_vae_classical.h for dense layer weights
 
-// Top function for HLS synthesis
-// Input: 56 pre-normalized features (physics-aware normalization)
-// Output: 32 quantum encoder outputs
-void extended_vae_encoder_top(
+#include "vitis_extended_vae_classical.h"
+
+typedef ap_fixed<20, 4, AP_RND, AP_SAT> score_t;
+
+// ReLU activation
+inline output_t relu(output_t x) {
+    #pragma HLS INLINE
+    return (x > output_t(0)) ? x : output_t(0);
+}
+
+// Dense layer: 32 -> 16 with ReLU
+void dense_hidden(output_t quantum_out[32], output_t hidden[HIDDEN_DIM]) {
+    #pragma HLS INLINE off
+    #pragma HLS ARRAY_PARTITION variable=quantum_out complete
+    #pragma HLS ARRAY_PARTITION variable=hidden complete
+    
+    for (int i = 0; i < HIDDEN_DIM; ++i) {
+        #pragma HLS UNROLL
+        acc_t sum = dense_hidden_bias[i];
+        for (int j = 0; j < 32; ++j) {
+            #pragma HLS UNROLL
+            sum += dense_hidden_weight[i][j] * quantum_out[j];
+        }
+        hidden[i] = relu(output_t(sum));
+    }
+}
+
+// z_mean layer: 16 -> 3
+void compute_z_mean(output_t hidden[HIDDEN_DIM], output_t z_mean[LATENT_DIM]) {
+    #pragma HLS INLINE off
+    #pragma HLS ARRAY_PARTITION variable=hidden complete
+    #pragma HLS ARRAY_PARTITION variable=z_mean complete
+    
+    for (int i = 0; i < LATENT_DIM; ++i) {
+        #pragma HLS UNROLL
+        acc_t sum = z_mean_bias[i];
+        for (int j = 0; j < HIDDEN_DIM; ++j) {
+            #pragma HLS UNROLL
+            sum += z_mean_weight[i][j] * hidden[j];
+        }
+        z_mean[i] = output_t(sum);
+    }
+}
+
+// CKL anomaly score: mean(z_mean^2)
+score_t compute_ckl_score(output_t z_mean[LATENT_DIM]) {
+    #pragma HLS INLINE off
+    #pragma HLS ARRAY_PARTITION variable=z_mean complete
+    
+    acc_t sum = 0;
+    for (int i = 0; i < LATENT_DIM; ++i) {
+        #pragma HLS UNROLL
+        sum += z_mean[i] * z_mean[i];
+    }
+    return score_t(sum / LATENT_DIM);
+}
+
+// ========================== Top-level functions ==========================
+
+// Quantum encoder only (56 -> 32)
+void extended_vae_quantum_encoder_top(
     input_t features[56],
     output_t encoder_output[32]
 ) {
@@ -459,39 +518,31 @@ void extended_vae_encoder_top(
     #pragma HLS ARRAY_PARTITION variable=encoder_output complete
     
     // Extract features for each block
-    // MET: pt=0, phi=1
     input_t met_pt = features[0];
     input_t met_phi = features[1];
     
-    // Electrons: pt[2:6], eta[6:10], phi[10:14]
     input_t ele_pt[4], ele_eta[4], ele_phi[4];
+    input_t mu_pt[4], mu_eta[4], mu_phi[4];
+    input_t jet_pt[10], jet_eta[10], jet_phi[10];
     #pragma HLS ARRAY_PARTITION variable=ele_pt complete
     #pragma HLS ARRAY_PARTITION variable=ele_eta complete
     #pragma HLS ARRAY_PARTITION variable=ele_phi complete
+    #pragma HLS ARRAY_PARTITION variable=mu_pt complete
+    #pragma HLS ARRAY_PARTITION variable=mu_eta complete
+    #pragma HLS ARRAY_PARTITION variable=mu_phi complete
+    #pragma HLS ARRAY_PARTITION variable=jet_pt complete
+    #pragma HLS ARRAY_PARTITION variable=jet_eta complete
+    #pragma HLS ARRAY_PARTITION variable=jet_phi complete
+    
     for (int i = 0; i < 4; ++i) {
         #pragma HLS UNROLL
         ele_pt[i] = features[2 + i];
         ele_eta[i] = features[6 + i];
         ele_phi[i] = features[10 + i];
-    }
-    
-    // Muons: pt[14:18], eta[18:22], phi[22:26]
-    input_t mu_pt[4], mu_eta[4], mu_phi[4];
-    #pragma HLS ARRAY_PARTITION variable=mu_pt complete
-    #pragma HLS ARRAY_PARTITION variable=mu_eta complete
-    #pragma HLS ARRAY_PARTITION variable=mu_phi complete
-    for (int i = 0; i < 4; ++i) {
-        #pragma HLS UNROLL
         mu_pt[i] = features[14 + i];
         mu_eta[i] = features[18 + i];
         mu_phi[i] = features[22 + i];
     }
-    
-    // Jets: pt[26:36], eta[36:46], phi[46:56]
-    input_t jet_pt[10], jet_eta[10], jet_phi[10];
-    #pragma HLS ARRAY_PARTITION variable=jet_pt complete
-    #pragma HLS ARRAY_PARTITION variable=jet_eta complete
-    #pragma HLS ARRAY_PARTITION variable=jet_phi complete
     for (int i = 0; i < 10; ++i) {
         #pragma HLS UNROLL
         jet_pt[i] = features[26 + i];
@@ -499,13 +550,10 @@ void extended_vae_encoder_top(
         jet_phi[i] = features[46 + i];
     }
     
-    // Run blocks (can be parallelized with DATAFLOW)
+    // Run quantum blocks
     #pragma HLS DATAFLOW
     
-    output_t met_out[3];
-    output_t ele_out[8];
-    output_t mu_out[8];
-    output_t jet_out[13];
+    output_t met_out[3], ele_out[8], mu_out[8], jet_out[13];
     #pragma HLS ARRAY_PARTITION variable=met_out complete
     #pragma HLS ARRAY_PARTITION variable=ele_out complete
     #pragma HLS ARRAY_PARTITION variable=mu_out complete
@@ -516,21 +564,39 @@ void extended_vae_encoder_top(
     run_mu_block(mu_pt, mu_eta, mu_phi, mu_out);
     run_jet_block(jet_pt, jet_eta, jet_phi, jet_out);
     
-    // Combine outputs: MET(3) + Ele(8) + Mu(8) + Jet(13) = 32
-    for (int i = 0; i < 3; ++i) {
-        #pragma HLS UNROLL
-        encoder_output[i] = met_out[i];
-    }
-    for (int i = 0; i < 8; ++i) {
-        #pragma HLS UNROLL
-        encoder_output[3 + i] = ele_out[i];
-    }
-    for (int i = 0; i < 8; ++i) {
-        #pragma HLS UNROLL
-        encoder_output[11 + i] = mu_out[i];
-    }
-    for (int i = 0; i < 13; ++i) {
-        #pragma HLS UNROLL
-        encoder_output[19 + i] = jet_out[i];
-    }
+    // Combine outputs
+    for (int i = 0; i < 3; ++i) encoder_output[i] = met_out[i];
+    for (int i = 0; i < 8; ++i) encoder_output[3 + i] = ele_out[i];
+    for (int i = 0; i < 8; ++i) encoder_output[11 + i] = mu_out[i];
+    for (int i = 0; i < 13; ++i) encoder_output[19 + i] = jet_out[i];
+}
+
+// Full anomaly detection pipeline (56 -> scalar score)
+void extended_vae_anomaly_top(
+    input_t features[56],
+    score_t* anomaly_score
+) {
+    #pragma HLS INTERFACE mode=s_axilite port=return
+    #pragma HLS INTERFACE mode=s_axilite port=features
+    #pragma HLS INTERFACE mode=s_axilite port=anomaly_score
+    
+    #pragma HLS ARRAY_PARTITION variable=features complete
+    
+    // Step 1: Quantum encoder (56 -> 32)
+    output_t quantum_out[32];
+    #pragma HLS ARRAY_PARTITION variable=quantum_out complete
+    extended_vae_quantum_encoder_top(features, quantum_out);
+    
+    // Step 2: Dense hidden layer (32 -> 16 with ReLU)
+    output_t hidden[HIDDEN_DIM];
+    #pragma HLS ARRAY_PARTITION variable=hidden complete
+    dense_hidden(quantum_out, hidden);
+    
+    // Step 3: z_mean layer (16 -> 3)
+    output_t z_mean[LATENT_DIM];
+    #pragma HLS ARRAY_PARTITION variable=z_mean complete
+    compute_z_mean(hidden, z_mean);
+    
+    // Step 4: CKL anomaly score = mean(z_mean^2)
+    *anomaly_score = compute_ckl_score(z_mean);
 }

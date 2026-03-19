@@ -39,13 +39,18 @@ Output: 4D Mahalanobis anomaly score
 
 ### 2. Extended Quantum VAE
 
-Architecture:
+Quantum Encoder Architecture:
 - MET: 1 qubit → 3 outputs (PauliZ, PauliX, PauliY)
 - Electrons: 4 qubits → 8 outputs (4 PauliZ + 4 PauliX)
 - Muons: 4 qubits → 8 outputs (4 PauliZ + 4 PauliX)
 - Jets: 10 qubits → 13 outputs (10 PauliZ + 3 PauliX)
 
-Output: 32-dimensional latent encoding (fed to classical decoder for VAE)
+Full Anomaly Detection Pipeline:
+```
+Input (56) → Quantum Encoder (32) → Dense+ReLU (16) → z_mean (3) → CKL Score (scalar)
+```
+
+Output: CKL anomaly score = mean(z_mean²)
 
 ## Usage
 
@@ -170,12 +175,18 @@ The Catapult version uses:
 
 ### Extended VAE HLS
 
+The Extended VAE HLS implementations include the **full anomaly detection pipeline**:
+1. Quantum encoder (56 → 32)
+2. Dense layer with ReLU (32 → 16)
+3. z_mean projection (16 → 3)
+4. CKL anomaly score = mean(z_mean²)
+
 #### Vitis HLS
 
 ```bash
 cd cpp_inference/extended_vae
 
-# Generate Vitis-compatible headers
+# Generate Vitis-compatible headers (includes classical layer weights)
 python ../scripts/export_extended_vae_vitis_headers.py \
     --ckpt ../../outputs/models/particle_extended_quantum_vae_best.pt \
     --out-dir vitis_headers
@@ -184,7 +195,9 @@ python ../scripts/export_extended_vae_vitis_headers.py \
 # - vitis_headers/*.h
 # - extended_vae_inference_vitis.cpp
 
-# Top function: extended_vae_encoder_top
+# Top functions:
+# - extended_vae_quantum_encoder_top: Quantum encoder only (56 -> 32)
+# - extended_vae_anomaly_top: Full anomaly detection (56 -> scalar score)
 ```
 
 #### Catapult HLS
@@ -192,7 +205,7 @@ python ../scripts/export_extended_vae_vitis_headers.py \
 ```bash
 cd cpp_inference/extended_vae
 
-# Generate Catapult-compatible headers
+# Generate Catapult-compatible headers (includes classical layer weights)
 python ../scripts/export_extended_vae_catapult_headers.py \
     --ckpt ../../outputs/models/particle_extended_quantum_vae_best.pt \
     --out-dir catapult_headers
@@ -201,7 +214,7 @@ python ../scripts/export_extended_vae_catapult_headers.py \
 # - catapult_headers/*.h
 # - extended_vae_inference_catapult.cpp
 
-# Top function: extended_vae_encoder_top
+# Top function: extended_vae_anomaly_top (full anomaly detection)
 ```
 
 **Note:** Extended VAE expects **pre-normalized** input (physics-aware normalization).

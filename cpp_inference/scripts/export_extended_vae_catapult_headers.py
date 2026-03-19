@@ -133,6 +133,68 @@ def generate_weights(ckpt_path, out_path):
     print(f"  Depths: MET={met_depth}, ELE={ele_depth}, MU={mu_depth}, JET={jet_depth}")
 
 
+def emit_ac_fixed_2d_array(f, typename, name, values_2d):
+    """Emit a 2D fixed-point array."""
+    rows = len(values_2d)
+    cols = len(values_2d[0]) if rows > 0 else 0
+    f.write(f"const {typename} {name}[{rows}][{cols}] = {{\n")
+    for i, row in enumerate(values_2d):
+        f.write("    {")
+        for j, v in enumerate(row):
+            f.write(f"{v:.10f}")
+            if j != len(row) - 1:
+                f.write(", ")
+        f.write("}")
+        if i != rows - 1:
+            f.write(",")
+        f.write("\n")
+    f.write("};\n\n")
+
+
+def generate_classical_weights(ckpt_path, out_path):
+    """Generate classical layer weights for full anomaly detection pipeline."""
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    
+    if "model_state_dict" in ckpt:
+        sd = ckpt["model_state_dict"]
+    elif "state_dict" in ckpt:
+        sd = ckpt["state_dict"]
+    else:
+        sd = ckpt
+    
+    def get_param(keys):
+        for k in keys:
+            if k in sd:
+                return sd[k].detach().cpu().double()
+        raise KeyError(f"Could not find any of {keys}")
+    
+    dense_hidden_w = get_param(["encoder.dense_hidden.weight", "dense_hidden.weight"])
+    dense_hidden_b = get_param(["encoder.dense_hidden.bias", "dense_hidden.bias"])
+    z_mean_w = get_param(["encoder.z_mean.weight", "z_mean.weight"])
+    z_mean_b = get_param(["encoder.z_mean.bias", "z_mean.bias"])
+    
+    hidden_dim = dense_hidden_w.shape[0]
+    latent_dim = z_mean_w.shape[0]
+    
+    with open(out_path, "w") as f:
+        f.write("// Auto-generated classical layer weights for Extended VAE Catapult HLS\n")
+        f.write("// Pipeline: Quantum(32) -> Dense(hidden_dim) -> z_mean(latent_dim) -> CKL score\n")
+        f.write("#pragma once\n\n")
+        f.write('#include <ac_fixed.h>\n\n')
+        f.write("typedef ac_fixed<18, 2, true, AC_RND, AC_SAT> output_t;\n")
+        f.write("typedef ac_fixed<24, 4, true, AC_RND, AC_SAT> acc_t;\n\n")
+        f.write(f"#define HIDDEN_DIM {hidden_dim}\n")
+        f.write(f"#define LATENT_DIM {latent_dim}\n\n")
+        
+        emit_ac_fixed_2d_array(f, "output_t", "dense_hidden_weight", dense_hidden_w.tolist())
+        emit_ac_fixed_array(f, "output_t", "dense_hidden_bias", dense_hidden_b.tolist())
+        emit_ac_fixed_2d_array(f, "output_t", "z_mean_weight", z_mean_w.tolist())
+        emit_ac_fixed_array(f, "output_t", "z_mean_bias", z_mean_b.tolist())
+    
+    print(f"Wrote {out_path}")
+    print(f"  hidden_dim={hidden_dim}, latent_dim={latent_dim}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Export fixed-point headers for Extended VAE Catapult HLS")
     parser.add_argument("--ckpt", required=True, help="Path to trained model checkpoint")
@@ -145,11 +207,12 @@ def main():
     
     generate_trig_luts(out_dir / "catapult_extended_vae_trig_luts.h", args.nbits)
     generate_weights(args.ckpt, out_dir / "catapult_extended_vae_weights.h")
+    generate_classical_weights(args.ckpt, out_dir / "catapult_extended_vae_classical.h")
     
     print(f"\nDone! Headers written to {out_dir}/")
     print("\nTo use with Catapult HLS:")
     print(f"  1. Copy {out_dir}/*.h and extended_vae_inference_catapult.cpp to your Catapult project")
-    print("  2. Set extended_vae_encoder_top as the top function")
+    print("  2. Top function: extended_vae_anomaly_top (full anomaly detection)")
     print("  3. Run C simulation, then synthesis")
 
 
