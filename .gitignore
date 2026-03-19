@@ -1,47 +1,44 @@
-# Data files (exclude data folder)
-data/
-*.h5
-
-# Python cache
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
 
-# Virtual environments
-.venv/
-venv/
-env/
+# Compiled binaries
+qae_inference
+qae_inference_f32
+extended_vae_inference
+*.o
+
+# Generated headers (regenerate with scripts)
+*.h
+!cpp_inference/**/*.h
+
+# Data files
+*.csv
+*.h5
+*.hdf5
+
+# Output directories
+outputs/
+feature_normalization_plots/
+catapult_headers/
+hls_headers/
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Model outputs and results
-outputs/
-models/
-*.keras
-*.h5
-*.ckpt
-*.pkl
-
-# Logs
-*.log
-logs/
 
 # Jupyter
 .ipynb_checkpoints/
-*.ipynb
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-
+# Environment
+.env
+*.egg
